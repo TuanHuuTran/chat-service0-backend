@@ -1,14 +1,15 @@
 // chat.service.ts
 import {
+  BadRequestException,
   ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Conversation } from 'src/conversation/entities/conversation.entity';
-import { User } from 'src/auth/entities/auth.entity';
 import { DataSource, Repository } from 'typeorm';
 import { Message } from 'src/conversation/entities/message.entity';
+import { UserChatStatus } from 'src/conversation/entities/user-chat-status.entity';
 import { toVietnamTime } from 'src/utils/helper';
 
 @Injectable()
@@ -18,208 +19,391 @@ export class ChatService {
     private conversationRepo: Repository<Conversation>,
     @InjectRepository(Message)
     private messageRepo: Repository<Message>,
-    @InjectRepository(User)
-    private userRepo: Repository<User>,
-
+    @InjectRepository(UserChatStatus)
+    private userChatStatusRepo: Repository<UserChatStatus>,
     private dataSource: DataSource,
   ) {}
 
   /**
-   * Tìm hoặc tạo conversation giữa 2 users
+   * ✅ Tạo hoặc lấy UserChatStatus (auto-create nếu chưa có)
    */
-  async findOrCreateConversation(user1Id: string, user2Id: string) {
-    // Tìm conversation hiện có (check cả 2 chiều)
-    let conversation = await this.conversationRepo.findOne({
-      where: [
-        { user1: { id: user1Id }, user2: { id: user2Id } },
-        { user1: { id: user2Id }, user2: { id: user1Id } },
-      ],
-      relations: ['user1', 'user2', 'lastMessage', 'lastMessage.sender'],
+  async ensureUserChatStatus(userId: string): Promise<UserChatStatus> {
+    let status = await this.userChatStatusRepo.findOne({
+      where: { userId },
     });
 
-    // Nếu chưa có thì tạo mới
+    if (!status) {
+      status = this.userChatStatusRepo.create({
+        userId,
+        isOnline: false,
+        lastSeen: new Date(),
+      });
+      await this.userChatStatusRepo.save(status);
+      console.log(`✅ Created UserChatStatus for user ${userId}`);
+    }
+
+    return status;
+  }
+
+  /**
+   * ✅ Update online status
+   */
+  async updateOnlineStatus(userId: string, isOnline: boolean) {
+    await this.ensureUserChatStatus(userId);
+
+    const updateData: Partial<UserChatStatus> = {
+      isOnline,
+      lastSeen: new Date(),
+    };
+
+    if (isOnline) {
+      updateData.lastConnectedAt = new Date();
+    }
+
+    await this.userChatStatusRepo.update({ userId }, updateData);
+
+    console.log(`🔄 Updated online status for ${userId}: ${isOnline}`);
+  }
+
+  /**
+   * ✅ Get UserChatStatus (với cache)
+   */
+  async getUserChatStatus(userId: string): Promise<UserChatStatus> {
+    return this.ensureUserChatStatus(userId);
+  }
+
+  /**
+   * ✅ Validate UUID format
+   */
+  private isValidUUID(uuid: string): boolean {
+    const uuidRegex =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    return uuidRegex.test(uuid);
+  }
+
+  /**
+   * ✅ Tìm hoặc tạo conversation (không cần User entity)
+   */
+  async findOrCreateConversation(
+    user1Id: string,
+    user2Id: string,
+  ): Promise<Conversation> {
+    // Validate UUID format
+    if (!this.isValidUUID(user1Id) || !this.isValidUUID(user2Id)) {
+      throw new BadRequestException('Invalid user ID format');
+    }
+
+    // Ensure UserChatStatus exists cho cả 2 users
+    await Promise.all([
+      this.ensureUserChatStatus(user1Id),
+      this.ensureUserChatStatus(user2Id),
+    ]);
+
+    // Tìm conversation hiện có
+    let conversation = await this.conversationRepo.findOne({
+      where: [
+        { user1Id, user2Id },
+        { user1Id: user2Id, user2Id: user1Id },
+      ],
+      relations: ['lastMessage'],
+    });
+
+    // Tạo mới nếu chưa có
     if (!conversation) {
-      const user1 = await this.userRepo.findOne({ where: { id: user1Id } });
-      const user2 = await this.userRepo.findOne({ where: { id: user2Id } });
-
-      if (!user1 || !user2) {
-        throw new NotFoundException('User not found');
-      }
-
       conversation = this.conversationRepo.create({
-        user1,
-        user2,
+        user1Id,
+        user2Id,
         unreadCount: 0,
       });
       await this.conversationRepo.save(conversation);
+      console.log(`✅ Created conversation: ${conversation.id}`);
     }
 
     return conversation;
   }
 
   /**
-   * Lấy tất cả messages trong conversation
+   * ✅ Send message (không cần User entity)
+   */
+  async sendMessage(data: {
+    senderId: string;
+    receiverId: string;
+    content: string;
+    conversationId?: string;
+    senderInfo?: { name: string; avatar?: string };
+    receiverInfo?: { name: string; avatar?: string };
+  }) {
+    // Validate
+    if (
+      !this.isValidUUID(data.senderId) ||
+      !this.isValidUUID(data.receiverId)
+    ) {
+      throw new BadRequestException('Invalid user ID format');
+    }
+
+    // Ensure UserChatStatus exists
+    await Promise.all([
+      this.ensureUserChatStatus(data.senderId),
+      this.ensureUserChatStatus(data.receiverId),
+    ]);
+
+    // Tìm hoặc tạo conversation
+    let conversation: Conversation;
+
+    if (data.conversationId) {
+      const found = await this.conversationRepo.findOne({
+        where: { id: data.conversationId },
+        relations: ['lastMessage'],
+      });
+
+      if (!found) {
+        throw new NotFoundException('Conversation not found');
+      }
+
+      conversation = found;
+    } else {
+      const existing = await this.conversationRepo.findOne({
+        where: [
+          { user1Id: data.senderId, user2Id: data.receiverId },
+          { user1Id: data.receiverId, user2Id: data.senderId },
+        ],
+        relations: ['lastMessage'],
+      });
+
+      if (existing) {
+        conversation = existing;
+      } else {
+        conversation = this.conversationRepo.create({
+          user1Id: data.senderId,
+          user2Id: data.receiverId,
+          unreadCount: 0,
+        });
+        await this.conversationRepo.save(conversation);
+      }
+    }
+
+    // Tạo message
+    const message = this.messageRepo.create({
+      conversation,
+      senderId: data.senderId,
+      content: data.content,
+      isSent: true,
+      isDelivered: false,
+      isRead: false,
+    });
+    await this.messageRepo.save(message);
+
+    // Update conversation lastMessage
+    await this.conversationRepo.update(conversation.id, {
+      lastMessage: message,
+      lastMessageId: message.id,
+      updatedAt: new Date(),
+    });
+
+    // Load lại conversation
+    const updatedConversation = await this.conversationRepo.findOne({
+      where: { id: conversation.id },
+      relations: ['lastMessage'],
+    });
+
+    // ✅ Null check before using
+    if (!updatedConversation) {
+      throw new NotFoundException('Failed to load updated conversation');
+    }
+
+    // Format response với user info từ FE (nếu có)
+    const formattedConversation = await this.formatConversation(
+      updatedConversation,
+      data.senderId,
+      data.receiverInfo,
+    );
+
+    return {
+      message: {
+        ...message,
+        senderInfo: data.senderInfo, // ✅ Trả về user info từ FE
+      },
+      conversation: formattedConversation,
+    };
+  }
+
+  /**
+   * ✅ Format conversation (không cần User entity)
+   */
+  // private async formatConversation(
+  //   conversation: Conversation,
+  //   currentUserId: string,
+  //   providedOtherUserInfo?: { name: string; avatar?: string },
+  // ) {
+  //   const otherUserId =
+  //     conversation.user1Id === currentUserId
+  //       ? conversation.user2Id
+  //       : conversation.user1Id;
+
+  //   // Get chat status
+  //   const chatStatus = await this.getUserChatStatus(otherUserId);
+
+  //   return {
+  //     id: conversation.id,
+  //     name: providedOtherUserInfo?.name || 'Unknown User',
+  //     avatar: providedOtherUserInfo?.avatar || '',
+  //     lastMessage: conversation.lastMessage?.content || '',
+  //     timestamp: conversation.lastMessage?.createdAt
+  //       ? toVietnamTime(conversation.lastMessage.createdAt.toISOString())
+  //       : toVietnamTime(conversation.updatedAt.toISOString()),
+  //     unread: conversation.unreadCount > 0,
+  //     isOnline: chatStatus.isOnline,
+  //     lastSeen: chatStatus.lastSeen?.toISOString(),
+  //     messageCount: conversation.unreadCount,
+  //     receiverId: otherUserId,
+  //   };
+  // }
+
+  private async formatConversation(
+    conversation: Conversation,
+    currentUserId: string,
+    providedOtherUserInfo?: { name: string; avatar?: string },
+  ) {
+    const otherUserId =
+      conversation.user1Id === currentUserId
+        ? conversation.user2Id
+        : conversation.user1Id;
+
+    // Get chat status
+    const chatStatus = await this.getUserChatStatus(otherUserId);
+
+    // ✅ Use provided info if available, otherwise use default
+    const userName = providedOtherUserInfo?.name || 'Unknown User';
+    const userAvatar = providedOtherUserInfo?.avatar || '';
+
+    return {
+      id: conversation.id,
+      name: userName,
+      avatar: userAvatar,
+      lastMessage: conversation.lastMessage?.content || '',
+      timestamp: conversation.lastMessage?.createdAt
+        ? toVietnamTime(conversation.lastMessage.createdAt.toISOString())
+        : toVietnamTime(conversation.updatedAt.toISOString()),
+      unread: conversation.unreadCount > 0,
+      isOnline: chatStatus?.isOnline || false, // ✅ Null check
+      lastSeen: chatStatus?.lastSeen?.toISOString() || null,
+      messageCount: conversation.unreadCount,
+      receiverId: otherUserId,
+    };
+  }
+
+  /**
+   * ✅ Get messages (không cần User entity)
    */
   async getMessages(
     conversationId: string,
     currentUserId: string,
     limit = 50,
     offset = 0,
+    providedUsersInfo?: Map<string, { name: string; avatar?: string }>,
   ) {
     const conversation = await this.conversationRepo.findOne({
       where: { id: conversationId },
-      relations: ['user1', 'user2', 'messages', 'lastMessage.sender'],
     });
 
-    console.log('conversation', conversation);
     if (!conversation) {
       throw new NotFoundException('Conversation not found');
     }
 
     const messages = await this.messageRepo.find({
       where: { conversation: { id: conversationId } },
-      relations: ['sender'],
       order: { createdAt: 'DESC' },
       take: limit,
       skip: offset,
     });
 
-    console.log('messages', messages);
-
     const total = await this.messageRepo.count({
       where: { conversation: { id: conversationId } },
     });
 
-    // Format messages theo interface FE
-    const formattedMessages = messages
-      .reverse()
-      .map((msg) => this.formatMessage(msg, currentUserId));
+    // Format messages
+    const formattedMessages = messages.reverse().map((msg) => {
+      const senderInfo = providedUsersInfo?.get(msg.senderId);
+
+      return {
+        id: msg.id,
+        text: msg.content,
+        sender:
+          msg.senderId === currentUserId
+            ? ('user' as const)
+            : ('friend' as const),
+        timestamp: toVietnamTime(msg.createdAt.toISOString()),
+        senderName: senderInfo?.name || 'Unknown',
+        avatar: senderInfo?.avatar,
+        reaction: msg.reaction,
+        isSent: msg.isSent,
+        isDelivered: msg.isDelivered,
+        isRead: msg.isRead,
+        deliveredAt: msg.deliveredAt?.toISOString(),
+        readAt: msg.readAt?.toISOString(),
+      };
+    });
 
     return {
-      conversation: this.formatConversation(conversation, currentUserId),
+      conversation: await this.formatConversation(conversation, currentUserId),
       messages: formattedMessages,
       total,
     };
   }
 
   /**
-   * Lấy danh sách conversations của user (sorted by updatedAt)
+   * ✅ Get user conversations (không cần User entity)
    */
-  async getUserConversations(userId: string) {
+  async getUserConversations(
+    userId: string,
+    providedUsersInfo?: Map<string, { name: string; avatar?: string }>,
+  ) {
     const conversations = await this.conversationRepo
       .createQueryBuilder('conversation')
-      .leftJoinAndSelect('conversation.user1', 'user1')
-      .leftJoinAndSelect('conversation.user2', 'user2')
       .leftJoinAndSelect('conversation.lastMessage', 'lastMessage')
-      .leftJoinAndSelect('lastMessage.sender', 'sender')
-      .where('user1.id = :userId OR user2.id = :userId', { userId })
+      .where(
+        'conversation.user1Id = :userId OR conversation.user2Id = :userId',
+        {
+          userId,
+        },
+      )
       .orderBy('conversation.updatedAt', 'DESC')
       .getMany();
 
-    return conversations.map((conv) => this.formatConversation(conv, userId));
-  }
+    return Promise.all(
+      conversations.map((conv) => {
+        const otherUserId =
+          conv.user1Id === userId ? conv.user2Id : conv.user1Id;
+        const otherUserInfo = providedUsersInfo?.get(otherUserId);
 
-  /**
-   * Helper: Format conversation theo interface FE
-   */
-  private formatConversation(
-    conversation: Conversation,
-    currentUserId: string,
-  ) {
-    // Xác định người nhận (người còn lại trong conversation)
-    const otherUser =
-      conversation.user1.id === currentUserId
-        ? conversation.user2
-        : conversation.user1;
-
-    return {
-      id: conversation.id,
-      name: otherUser.name,
-      avatar: otherUser.avatar || '',
-      lastMessage: conversation.lastMessage?.content || '',
-      timestamp:
-        toVietnamTime(conversation.lastMessage?.createdAt.toISOString()) ||
-        toVietnamTime(conversation.updatedAt.toISOString()),
-      unread: conversation.unreadCount > 0,
-      isOnline: otherUser.isOnline,
-      lastSeen: otherUser.lastSeen?.toISOString(),
-      messageCount: conversation.unreadCount,
-      receiverId: otherUser.id, // Thêm receiverId để dễ emit socket
-    };
-  }
-
-  /**
-   * Helper: Format message theo interface FE
-   */
-  private formatMessage(message: Message, currentUserId: string) {
-    return {
-      id: message.id,
-      text: message.content,
-      sender:
-        message.sender.id === currentUserId ? 'user' : ('friend' as const),
-      timestamp: toVietnamTime(message.createdAt.toISOString()),
-      senderName: message.sender.name,
-      avatar: message.sender.avatar || undefined,
-      reaction: message.reaction || undefined,
-    };
-  }
-
-  /**
-   * Helper: Lấy conversation đã format
-   */
-  private async getConversationFormatted(
-    conversationId: string,
-    currentUserId: string,
-  ) {
-    const conversation = await this.conversationRepo.findOne({
-      where: { id: conversationId },
-      relations: ['user1', 'user2', 'lastMessage', 'lastMessage.sender'],
-    });
-
-    console.log(
-      'conversationconversationconversationconversationconversation',
-      conversation,
+        return this.formatConversation(conv, userId, otherUserInfo);
+      }),
     );
-
-    if (!conversation) {
-      throw new NotFoundException('Conversation not found');
-    }
-
-    return this.formatConversation(conversation, currentUserId);
   }
 
   /**
-   * ✅ NEW: Mark message as delivered
+   * ✅ Mark as delivered
    */
   async markAsDelivered(messageId: string) {
-    console.log(`✅✅ Marking message ${messageId} as delivered`);
-
     await this.messageRepo.update(messageId, {
       isDelivered: true,
       deliveredAt: new Date(),
     });
-
     return { success: true };
   }
 
   /**
-   * ✅ Mark messages as read with count
+   * ✅ Mark messages as read
    */
   async markMessagesAsRead(
     conversationId: string,
     userId: string,
   ): Promise<{ success: boolean; markedCount: number }> {
-    console.log(`👀 Marking messages as read:`, {
-      conversationId,
-      userId,
-    });
-
     const messages = await this.messageRepo
       .createQueryBuilder('message')
       .leftJoin('message.conversation', 'conversation')
-      .leftJoin('message.sender', 'sender')
       .where('conversation.id = :conversationId', { conversationId })
-      .andWhere('sender.id != :userId', { userId })
+      .andWhere('message.senderId != :userId', { userId })
       .andWhere('message.isRead = :isRead', { isRead: false })
       .getMany();
 
@@ -231,7 +415,6 @@ export class ChatService {
         isRead: true,
         readAt: new Date(),
       });
-      console.log(`✅ Marked ${markedCount} messages as read`);
     }
 
     await this.conversationRepo.update(
@@ -243,253 +426,17 @@ export class ChatService {
   }
 
   /**
-   * ✅ UPDATED: Get messages with status information
-   */
-  async getMessagesConversation(conversationId: string) {
-    const conversation = await this.conversationRepo.findOne({
-      where: { id: conversationId },
-      relations: ['messages', 'messages.sender'],
-    });
-
-    if (!conversation) {
-      throw new Error('Conversation not found');
-    }
-
-    // Transform messages to include status
-    const messages = conversation.messages.map((msg) => {
-      const isSender = msg.sender.id === msg.sender.id; // You need to pass current userId here
-
-      return {
-        id: msg.id,
-        text: msg.content,
-        sender: isSender ? 'user' : 'friend',
-        timestamp: new Date(msg.createdAt).toLocaleTimeString('en-US', {
-          hour: 'numeric',
-          minute: '2-digit',
-        }),
-        senderName: msg.sender.name,
-        avatar: msg.sender.avatar,
-        reaction: msg.reaction,
-        // ✅ Status information
-        isSent: msg.isSent,
-        isDelivered: msg.isDelivered,
-        isRead: msg.isRead,
-        deliveredAt: msg.deliveredAt?.toISOString(),
-        readAt: msg.readAt?.toISOString(),
-      };
-    });
-
-    return {
-      conversation: {
-        id: conversation.id,
-        name: 'Conversation',
-      },
-      messages,
-    };
-  }
-
-  /**
-   * ✅ UPDATED: Create message with isSent = true
-   */
-  // async sendMessage(data: {
-  //   senderId: string;
-  //   receiverId: string;
-  //   content: string;
-  //   conversationId?: string;
-  // }) {
-  //   let conversation: Conversation | null = null;
-
-  //   if (data.conversationId) {
-  //     conversation = await this.conversationRepo.findOne({
-  //       where: { id: data.conversationId },
-  //       relations: ['user1', 'user2'],
-  //     });
-
-  //     if (!conversation) {
-  //       throw new Error('Conversation not found');
-  //     }
-  //   } else {
-  //     // Tìm hoặc tạo conversation
-  //     conversation = await this.conversationRepo
-  //       .createQueryBuilder('conversation')
-  //       .leftJoinAndSelect('conversation.user1', 'user1')
-  //       .leftJoinAndSelect('conversation.user2', 'user2')
-  //       .where(
-  //         '(user1.id = :senderId AND user2.id = :receiverId) OR (user1.id = :receiverId AND user2.id = :senderId)',
-  //         {
-  //           senderId: data.senderId,
-  //           receiverId: data.receiverId,
-  //         },
-  //       )
-  //       .getOne();
-
-  //     if (!conversation) {
-  //       const user1 = await this.userRepo.findOne({
-  //         where: { id: data.senderId },
-  //       });
-  //       const user2 = await this.userRepo.findOne({
-  //         where: { id: data.receiverId },
-  //       });
-
-  //       if (!user1 || !user2) {
-  //         throw new Error('Users not found');
-  //       }
-
-  //       conversation = this.conversationRepo.create({
-  //         user1,
-  //         user2,
-  //       });
-
-  //       await this.conversationRepo.save(conversation);
-  //     }
-  //   }
-
-  //   // Tạo message với isSent = true
-  //   const sender = await this.userRepo.findOne({
-  //     where: { id: data.senderId },
-  //   });
-
-  //   if (!sender) {
-  //     throw new Error('Sender not found');
-  //   }
-
-  //   const message = this.messageRepo.create({
-  //     conversation,
-  //     sender,
-  //     content: data.content,
-  //     isSent: true, // ✅ Đánh dấu đã gửi thành công
-  //     isDelivered: false, // Sẽ update sau nếu receiver online
-  //     isRead: false,
-  //     createdAt: new Date(),
-  //   });
-
-  //   await this.messageRepo.save(message);
-
-  //   // ✅ Update conversation với lastMessage relation và lastMessageId
-  //   await this.conversationRepo.update(conversation.id, {
-  //     lastMessage: message,
-  //     lastMessageId: message.id,
-  //     updatedAt: new Date(),
-  //   });
-
-  //   // Load sender info
-  //   const savedMessage = await this.messageRepo.findOne({
-  //     where: { id: message.id },
-  //     relations: ['sender'],
-  //   });
-
-  //   if (!savedMessage) {
-  //     throw new Error('Failed to save message');
-  //   }
-
-  //   return {
-  //     message: savedMessage,
-  //     conversation: {
-  //       id: conversation.id,
-  //       lastMessage: data.content,
-  //       lastMessageId: message.id,
-  //       updatedAt: new Date(),
-  //     },
-  //   };
-  // }
-
-  async sendMessage(data: {
-    senderId: string;
-    receiverId: string;
-    content: string;
-    conversationId?: string;
-  }) {
-    let conversation: Conversation | null = null;
-
-    // ✅ Tìm hoặc tạo conversation
-    if (data.conversationId) {
-      conversation = await this.conversationRepo.findOne({
-        where: { id: data.conversationId },
-        relations: ['user1', 'user2', 'lastMessage'],
-      });
-      if (!conversation) throw new Error('Conversation not found');
-    } else {
-      conversation = await this.conversationRepo
-        .createQueryBuilder('conversation')
-        .leftJoinAndSelect('conversation.user1', 'user1')
-        .leftJoinAndSelect('conversation.user2', 'user2')
-        .leftJoinAndSelect('conversation.lastMessage', 'lastMessage')
-        .where(
-          '(user1.id = :senderId AND user2.id = :receiverId) OR (user1.id = :receiverId AND user2.id = :senderId)',
-          { senderId: data.senderId, receiverId: data.receiverId },
-        )
-        .getOne();
-
-      if (!conversation) {
-        const user1 = await this.userRepo.findOne({
-          where: { id: data.senderId },
-        });
-        const user2 = await this.userRepo.findOne({
-          where: { id: data.receiverId },
-        });
-        if (!user1 || !user2) throw new Error('Users not found');
-
-        conversation = this.conversationRepo.create({ user1, user2 });
-        await this.conversationRepo.save(conversation);
-      }
-    }
-
-    // ✅ Tạo message
-    const sender = await this.userRepo.findOne({
-      where: { id: data.senderId },
-    });
-    if (!sender) throw new Error('Sender not found');
-
-    const message = this.messageRepo.create({
-      conversation,
-      sender,
-      content: data.content,
-      isSent: true,
-      isDelivered: false,
-      isRead: false,
-      createdAt: new Date(),
-    });
-
-    await this.messageRepo.save(message);
-
-    // ✅ Cập nhật conversation.lastMessage
-    await this.conversationRepo.update(conversation.id, {
-      lastMessage: message,
-      lastMessageId: message.id,
-      updatedAt: new Date(),
-    });
-
-    // ✅ Load lại conversation đầy đủ quan hệ để format chính xác
-    const updatedConversation = await this.conversationRepo.findOne({
-      where: { id: conversation.id },
-      relations: ['user1', 'user2', 'lastMessage'],
-    });
-
-    if (!updatedConversation) throw new Error('Failed to reload conversation');
-
-    // ✅ Load sender info đầy đủ
-    const savedMessage = await this.messageRepo.findOne({
-      where: { id: message.id },
-      relations: ['sender'],
-    });
-    if (!savedMessage) throw new Error('Failed to save message');
-
-    // ✅ Trả về dữ liệu chuẩn hóa
-    return {
-      message: savedMessage,
-      conversation: this.formatConversation(updatedConversation, data.senderId),
-    };
-  }
-
-  /**
-   * ✅ Helper: Get unread count with delivered status
+   * ✅ Get unread count
    */
   async getUnreadCount(userId: string) {
     const conversations = await this.conversationRepo
       .createQueryBuilder('conversation')
-      .leftJoinAndSelect('conversation.user1', 'user1')
-      .leftJoinAndSelect('conversation.user2', 'user2')
-      .where('user1.id = :userId OR user2.id = :userId', { userId })
+      .where(
+        'conversation.user1Id = :userId OR conversation.user2Id = :userId',
+        {
+          userId,
+        },
+      )
       .getMany();
 
     const conversationIds = conversations.map((c) => c.id);
@@ -501,11 +448,10 @@ export class ChatService {
     const unreadMessages = await this.messageRepo
       .createQueryBuilder('message')
       .leftJoin('message.conversation', 'conversation')
-      .leftJoin('message.sender', 'sender')
       .select('conversation.id', 'conversationId')
       .addSelect('COUNT(*)', 'count')
       .where('conversation.id IN (:...conversationIds)', { conversationIds })
-      .andWhere('sender.id != :userId', { userId })
+      .andWhere('message.senderId != :userId', { userId })
       .andWhere('message.isRead = :isRead', { isRead: false })
       .groupBy('conversation.id')
       .getRawMany();
@@ -522,60 +468,50 @@ export class ChatService {
   }
 
   /**
-   * ✅ Delete conversation
+   * ✅ Get conversation với userIds
    */
-  // ✅ Lấy conversation có 2 user (phục vụ controller emit)
-  // ✅ Lấy conversation có 2 user (phục vụ controller emit)
   async getConversationWithUsers(conversationId: string) {
     return this.conversationRepo.findOne({
       where: { id: conversationId },
-      relations: ['user1', 'user2'],
     });
   }
 
-  // ✅ Xóa conversation + messages
+  /**
+   * ✅ Delete conversation
+   */
   async deleteConversation(conversationId: string, userId: string) {
-    console.log(`🗑️ Deleting conversation:`, { conversationId, userId });
-
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction();
 
     try {
-      // 🔹 Lấy conversation trong transaction
       const conversation = await queryRunner.manager.findOne(Conversation, {
         where: { id: conversationId },
-        relations: ['user1', 'user2'],
       });
 
       if (!conversation) {
         throw new NotFoundException('Conversation not found');
       }
 
-      // 🔹 Kiểm tra quyền xóa
-      if (
-        conversation.user1.id !== userId &&
-        conversation.user2.id !== userId
-      ) {
+      // Kiểm tra quyền
+      if (conversation.user1Id !== userId && conversation.user2Id !== userId) {
         throw new ForbiddenException(
-          'You are not authorized to delete this conversation',
+          'Not authorized to delete this conversation',
         );
       }
 
-      // 🔹 Đếm messages trước khi xóa
+      // Đếm messages
       const messageCount = await queryRunner.manager.count(Message, {
         where: { conversation: { id: conversationId } },
       });
 
-      // 🔹 Xóa messages trước
+      // Xóa messages
       await queryRunner.manager.delete(Message, {
         conversation: { id: conversationId },
       });
-      console.log(`✅ Deleted ${messageCount} messages from ${conversationId}`);
 
-      // 🔹 Xóa conversation
+      // Xóa conversation
       await queryRunner.manager.delete(Conversation, { id: conversationId });
-      console.log(`✅ Deleted conversation ${conversationId}`);
 
       await queryRunner.commitTransaction();
 
@@ -587,46 +523,9 @@ export class ChatService {
       };
     } catch (error) {
       await queryRunner.rollbackTransaction();
-      console.error('❌ Error deleting conversation:', error);
       throw error;
     } finally {
       await queryRunner.release();
     }
-  }
-
-  /**
-   * ✅ Soft delete conversation (optional - nếu muốn giữ lại dữ liệu)
-   */
-  async softDeleteConversation(conversationId: string, userId: string) {
-    console.log(`🗑️ Soft deleting conversation:`, {
-      conversationId,
-      userId,
-    });
-
-    const conversation = await this.conversationRepo.findOne({
-      where: { id: conversationId },
-      relations: ['user1', 'user2'],
-    });
-
-    if (!conversation) {
-      throw new NotFoundException('Conversation not found');
-    }
-
-    if (conversation.user1.id !== userId && conversation.user2.id !== userId) {
-      throw new Error('You are not authorized to delete this conversation');
-    }
-
-    // Thêm field deletedBy vào conversation entity nếu muốn soft delete
-    await this.conversationRepo.update(conversationId, {
-      // deletedBy: userId,
-      // deletedAt: new Date(),
-      // isDeleted: true,
-    });
-
-    return {
-      success: true,
-      message: 'Conversation archived successfully',
-      conversationId,
-    };
   }
 }

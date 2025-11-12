@@ -1,5 +1,3 @@
-// chat.controller.ts
-// ============================================
 import {
   Controller,
   Post,
@@ -7,8 +5,8 @@ import {
   Body,
   Param,
   Query,
-  Delete,
   NotFoundException,
+  Delete,
 } from '@nestjs/common';
 import { ChatService } from './chat.service';
 import { ChatGateway } from './chat.gateway';
@@ -21,7 +19,7 @@ export class ChatController {
   ) {}
 
   /**
-   * Gửi message (tự động tạo conversation nếu chưa có)
+   * ✅ Send message với user info từ FE
    */
   @Post('messages')
   async sendMessage(
@@ -31,14 +29,12 @@ export class ChatController {
       receiverId: string;
       content: string;
       conversationId?: string;
+      senderInfo?: { name: string; avatar?: string };
+      receiverInfo?: { name: string; avatar?: string };
     },
   ) {
-    // 1. Save message vào DB
     const result = await this.chatService.sendMessage(dto);
 
-    console.log('data send api', result);
-
-    // 2. Emit real-time cho receiver qua Gateway
     const isReceiverOnline = this.chatGateway.emitToUser(
       dto.receiverId,
       'newMessage',
@@ -49,45 +45,47 @@ export class ChatController {
       },
     );
 
-    console.log(
-      `💬 Message sent via API from ${dto.senderId} to ${dto.receiverId}`,
-    );
-    console.log(
-      `${isReceiverOnline ? '✅ Receiver online - Real-time sent' : '⚠️ Receiver offline - Will see on next login'}`,
-    );
-
-    // 3. Trả về kết quả + status online
     return {
       ...result,
       receiverOnline: isReceiverOnline,
-      deliveryMethod: 'api',
     };
   }
 
   /**
-   * Tạo hoặc lấy conversation
+   * ✅ Create conversation với user info từ FE
    */
   @Post('conversations')
-  async createConversation(@Body() dto: { user1Id: string; user2Id: string }) {
+  async createConversation(
+    @Body()
+    dto: {
+      user1Id: string;
+      user2Id: string;
+      user1Info?: { name: string; avatar?: string };
+      user2Info?: { name: string; avatar?: string };
+    },
+  ) {
     const conversation = await this.chatService.findOrCreateConversation(
       dto.user1Id,
       dto.user2Id,
     );
 
-    // Format theo FE interface
-    return this.chatService['formatConversation'](conversation, dto.user1Id);
+    return this.chatService['formatConversation'](
+      conversation,
+      dto.user1Id,
+      dto.user2Info,
+    );
   }
 
   /**
-   * Lấy messages trong conversation
+   * ✅ Get messages với user info từ FE
    */
   @Get('conversations/:conversationId/messages')
   async getMessages(
     @Param('conversationId') conversationId: string,
+    @Query('userId') userId: string,
     @Query('limit') limit?: number,
     @Query('offset') offset?: number,
   ) {
-    const userId = '66bd2174-9e71-4cb6-9240-3caec5680e82';
     if (!userId) {
       throw new Error('userId is required');
     }
@@ -101,7 +99,7 @@ export class ChatController {
   }
 
   /**
-   * Lấy danh sách conversations của user
+   * ✅ Get user conversations
    */
   @Get('users/:userId/conversations')
   async getUserConversations(@Param('userId') userId: string) {
@@ -109,7 +107,7 @@ export class ChatController {
   }
 
   /**
-   * Đánh dấu messages là đã đọc
+   * ✅ Mark as read
    */
   @Post('conversations/:conversationId/read')
   async markAsRead(
@@ -121,14 +119,11 @@ export class ChatController {
       userId,
     );
 
-    // Emit real-time cho sender biết messages đã được đọc
     const conversations = await this.chatService.getUserConversations(userId);
     const conversation = conversations.find((c) => c.id === conversationId);
 
     if (conversation) {
-      const senderId = conversation.receiverId; // receiverId trong formatted conversation là người còn lại
-
-      this.chatGateway.emitToUser(senderId, 'messagesRead', {
+      this.chatGateway.emitToUser(conversation.receiverId, 'messagesRead', {
         conversationId,
         readBy: userId,
         timestamp: new Date().toISOString(),
@@ -139,7 +134,7 @@ export class ChatController {
   }
 
   /**
-   * Lấy số lượng unread messages
+   * ✅ Get unread count
    */
   @Get('users/:userId/unread-count')
   async getUnreadCount(@Param('userId') userId: string) {
@@ -147,7 +142,7 @@ export class ChatController {
   }
 
   /**
-   * Kiểm tra online status của users
+   * ✅ Check online status
    */
   @Post('users/online-status')
   async checkOnlineStatus(@Body() dto: { userIds: string[] }) {
@@ -156,19 +151,15 @@ export class ChatController {
       isOnline: this.chatGateway.isUserOnline(userId),
     }));
 
-    return {
-      success: true,
-      onlineStatus,
-    };
+    return { success: true, onlineStatus };
   }
 
   /**
-   * Lấy danh sách users đang online
+   * ✅ Get online users
    */
   @Get('users/online')
   async getOnlineUsers() {
     const users = this.chatGateway.getOnlineUsers();
-
     return {
       success: true,
       users,
@@ -177,7 +168,7 @@ export class ChatController {
   }
 
   /**
-   * ✅ Xóa conversation
+   * ✅ Delete conversation
    */
   @Delete('conversations/:conversationId')
   async deleteConversation(
@@ -188,30 +179,33 @@ export class ChatController {
       throw new Error('userId is required');
     }
 
-    // 🔹 Lấy thông tin conversation trước khi xóa để xác định người còn lại
+    // Get conversation
     const conversation =
       await this.chatService.getConversationWithUsers(conversationId);
-    if (!conversation) throw new NotFoundException('Conversation not found');
 
+    if (!conversation) {
+      throw new NotFoundException('Conversation not found');
+    }
+
+    // Xác định người còn lại
     const receiverId =
-      conversation.user1.id === userId
-        ? conversation.user2.id
-        : conversation.user1.id;
+      conversation.user1Id === userId
+        ? conversation.user2Id
+        : conversation.user1Id;
 
-    // 🔹 Xóa conversation
+    // Delete conversation
     const result = await this.chatService.deleteConversation(
       conversationId,
       userId,
     );
 
-    // 🔹 Emit realtime cho người còn lại
+    // Emit realtime
     this.chatGateway.emitToUser(receiverId, 'conversationDeleted', {
       conversationId,
       deletedBy: userId,
       timestamp: new Date().toISOString(),
     });
 
-    // 🔹 Emit cho chính người xóa (để UI cập nhật)
     this.chatGateway.emitToUser(userId, 'conversationDeleted', {
       conversationId,
       deletedBy: userId,
@@ -223,7 +217,7 @@ export class ChatController {
   }
 
   /**
-   * ✅ Xóa nhiều conversations cùng lúc
+   * ✅ Delete multiple conversations
    */
   @Post('conversations/delete-multiple')
   async deleteMultipleConversations(

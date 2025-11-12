@@ -6,7 +6,6 @@ import {
   PrimaryGeneratedColumn,
 } from 'typeorm';
 import { Conversation } from './conversation.entity';
-import { User } from 'src/auth/entities/auth.entity';
 
 @Entity('messages')
 export class Message {
@@ -16,28 +15,26 @@ export class Message {
   @ManyToOne(() => Conversation, (conversation) => conversation.messages)
   conversation: Conversation;
 
-  @ManyToOne(() => User)
+  @Column()
   senderId: string; // ✅ Chỉ lưu ID
 
   @Column('text')
   content: string;
 
-  // ✅ Trạng thái tin nhắn
   @Column({ default: true })
-  isSent: boolean; // Đã gửi lên server thành công
+  isSent: boolean;
 
   @Column({ default: false })
-  isDelivered: boolean; // Người nhận đã nhận được (online)
-
-  // ✅ Timestamp cho từng trạng thái
-  @Column({ type: 'timestamp', nullable: true })
-  deliveredAt: Date; // Thời gian delivered
-
-  @Column({ type: 'timestamp', nullable: true })
-  readAt: Date; // Thời gian read
+  isDelivered: boolean;
 
   @Column({ default: false })
   isRead: boolean;
+
+  @Column({ type: 'timestamp', nullable: true })
+  deliveredAt: Date;
+
+  @Column({ type: 'timestamp', nullable: true })
+  readAt: Date;
 
   @Column({ nullable: true })
   reaction: string;
