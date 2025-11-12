@@ -1,6 +1,11 @@
-import { Column, Entity, PrimaryColumn, UpdateDateColumn } from 'typeorm';
+import {
+  Column,
+  Entity,
+  PrimaryColumn,
+  UpdateDateColumn,
+  CreateDateColumn,
+} from 'typeorm';
 
-// ✅ RECOMMENDED: Tách bảng UserChatStatus
 @Entity('user_chat_status')
 export class UserChatStatus {
   @PrimaryColumn()
@@ -15,6 +20,9 @@ export class UserChatStatus {
   @Column({ type: 'timestamp', nullable: true })
   lastConnectedAt: Date;
 
-  @UpdateDateColumn()
+  @CreateDateColumn({ type: 'timestamp' })
+  createdAt: Date;
+
+  @UpdateDateColumn({ type: 'timestamp' })
   updatedAt: Date;
 }

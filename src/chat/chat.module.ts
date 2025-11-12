@@ -6,9 +6,10 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { Conversation } from 'src/conversation/entities/conversation.entity';
 import { Message } from 'src/conversation/entities/message.entity';
 import { User } from 'src/auth/entities/auth.entity';
+import { UserChatStatus } from 'src/conversation/entities/user-chat-status.entity';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Conversation, Message, User])],
+  imports: [TypeOrmModule.forFeature([Conversation, Message, UserChatStatus])],
   controllers: [ChatController],
   providers: [ChatGateway, ChatService],
 })

@@ -1,4 +1,3 @@
-// chat.gateway.ts
 import {
   ConnectedSocket,
   MessageBody,
@@ -10,9 +9,6 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { ChatService } from './chat.service';
-import { InjectRepository } from '@nestjs/typeorm';
-import { User } from 'src/auth/entities/auth.entity';
-import { Repository } from 'typeorm';
 
 @WebSocketGateway({
   cors: { origin: '*' },
@@ -24,11 +20,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   private connectedUsers = new Map<string, string>();
 
-  constructor(
-    private chatService: ChatService,
-    @InjectRepository(User)
-    private userRepo: Repository<User>,
-  ) {}
+  constructor(private chatService: ChatService) {}
 
   async handleConnection(client: Socket) {
     const userId = client.handshake.query.userId as string;
@@ -41,16 +33,13 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     this.connectedUsers.set(userId, client.id);
 
-    await this.userRepo.update(userId, {
-      isOnline: true,
-      lastSeen: new Date(),
-    });
+    // ✅ Update UserChatStatus
+    await this.chatService.updateOnlineStatus(userId, true);
 
     console.log(`✅ User ${userId} connected (socketId: ${client.id})`);
-    console.log('🟢 Online users:', Array.from(this.connectedUsers.keys()));
 
     client.emit('connected', {
-      message: 'Kết nối socket thành công!',
+      message: 'Connected successfully',
       socketId: client.id,
       userId,
       onlineUsers: Array.from(this.connectedUsers.keys()),
@@ -70,25 +59,119 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     if (userId) {
       this.connectedUsers.delete(userId);
 
-      const lastSeen = new Date();
-      await this.userRepo.update(userId, {
-        isOnline: false,
-        lastSeen,
-      });
+      // ✅ Update UserChatStatus
+      await this.chatService.updateOnlineStatus(userId, false);
 
       console.log(`🔴 User ${userId} disconnected`);
 
       client.broadcast.emit('userOffline', {
         userId,
-        lastSeen: lastSeen.toISOString(),
         timestamp: new Date().toISOString(),
       });
     }
   }
 
   /**
-   * ✅ UPDATED: Gửi message với message status tracking
+   * ✅ Send message với user info từ FE
    */
+  // @SubscribeMessage('sendMessage')
+  // async handleSendMessage(
+  //   @MessageBody()
+  //   data: {
+  //     senderId: string;
+  //     receiverId: string;
+  //     content: string;
+  //     conversationId?: string;
+  //     tempId: string;
+  //     senderInfo?: { name: string; avatar?: string };
+  //     receiverInfo?: { name: string; avatar?: string };
+  //   },
+  //   @ConnectedSocket() client: Socket,
+  // ) {
+  //   try {
+  //     console.log(
+  //       `📤 Sending message from ${data.senderId} to ${data.receiverId}`,
+  //     );
+
+  //     // Save message
+  //     const result = await this.chatService.sendMessage({
+  //       senderId: data.senderId,
+  //       receiverId: data.receiverId,
+  //       content: data.content,
+  //       conversationId: data.conversationId,
+  //       senderInfo: data.senderInfo,
+  //       receiverInfo: data.receiverInfo,
+  //     });
+
+  //     console.log('data messages send', result);
+  //     const messageData = {
+  //       id: result.message.id,
+  //       text: result.message.content,
+  //       timestamp: new Date(result.message.createdAt).toLocaleTimeString(
+  //         'en-US',
+  //         {
+  //           hour: 'numeric',
+  //           minute: '2-digit',
+  //         },
+  //       ),
+  //       isSent: true,
+  //       isDelivered: false,
+  //       isRead: false,
+  //     };
+
+  //     // Emit success to sender
+  //     client.emit('messageSent', {
+  //       tempId: data.tempId,
+  //       message: messageData,
+  //       conversationId: result.conversation.id,
+  //     });
+
+  //     // Check if receiver is online
+  //     const receiverSocketId = this.connectedUsers.get(data.receiverId);
+
+  //     if (receiverSocketId) {
+  //       // Mark as delivered
+  //       await this.chatService.markAsDelivered(result.message.id);
+
+  //       // Send to receiver
+  //       this.server.to(receiverSocketId).emit('newMessage', {
+  //         message: {
+  //           id: result.message.id,
+  //           text: result.message.content,
+  //           sender: data.senderId,
+  //           timestamp: messageData.timestamp,
+  //           senderName: data.senderInfo?.name || 'Unknown',
+  //           avatar: data.senderInfo?.avatar,
+  //         },
+  //         conversation: {
+  //           id: result.conversation.id,
+  //           avatar: data.senderInfo?.avatar,
+  //         },
+  //       });
+
+  //       // Notify sender that message was delivered
+  //       client.emit('messageDelivered', {
+  //         messageId: result.message.id,
+  //         conversationId: result.conversation.id,
+  //         deliveredAt: new Date().toISOString(),
+  //       });
+
+  //       console.log(`✅✅ Message delivered to ${data.receiverId}`);
+  //     } else {
+  //       console.log(`⚠️ Receiver ${data.receiverId} is offline`);
+  //     }
+
+  //     return { success: true };
+  //   } catch (error) {
+  //     console.error('❌ Error sending message:', error);
+  //     client.emit('messageError', {
+  //       tempId: data.tempId,
+  //       error: error.message,
+  //     });
+  //     return { success: false, error: error.message };
+  //   }
+  // }
+
   @SubscribeMessage('sendMessage')
   async handleSendMessage(
     @MessageBody()
@@ -97,132 +180,122 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       receiverId: string;
       content: string;
       conversationId?: string;
-      tempId: string; // ✅ Client-generated temp ID
+      tempId: string;
+      senderInfo?: { name: string; avatar?: string };
+      receiverInfo?: { name: string; avatar?: string };
     },
     @ConnectedSocket() client: Socket,
   ) {
     try {
-      console.log(`📤 Sending message:`, {
-        from: data.senderId,
-        to: data.receiverId,
-        tempId: data.tempId,
-      });
+      console.log(
+        `📤 Sending message from ${data.senderId} to ${data.receiverId}`,
+      );
 
-      // 1. Lưu message vào DB với trạng thái isSent = true
+      // Save message
       const result = await this.chatService.sendMessage({
         senderId: data.senderId,
         receiverId: data.receiverId,
         content: data.content,
         conversationId: data.conversationId,
+        senderInfo: data.senderInfo,
+        receiverInfo: data.receiverInfo,
       });
+
+      console.log('✅ Message saved:', result.message.id);
 
       const messageData = {
         id: result.message.id,
-        text: result.message.content,
+        content: result.message.content,
         timestamp: new Date(result.message.createdAt).toLocaleTimeString(
-          'en-US',
+          'vi-VN',
           {
-            hour: 'numeric',
+            hour: '2-digit',
             minute: '2-digit',
           },
         ),
         isSent: true,
         isDelivered: false,
         isRead: false,
+        senderId: result.message.senderId,
+        senderName: data.senderInfo?.name || 'Unknown',
+        avatar: data.senderInfo?.avatar || '',
       };
 
-      // 2. ✅ Emit "messageSent" cho sender (A) - message đã lưu thành công
+      // ✅ 1. Emit success to SENDER
       client.emit('messageSent', {
         tempId: data.tempId,
         message: messageData,
         conversationId: result.conversation.id,
       });
-      console.log(`✅ Message saved (ID: ${result.message.id})`);
 
-      // 3. Kiểm tra receiver (B) có online không
+      // ✅ 2. Check if receiver is online
       const receiverSocketId = this.connectedUsers.get(data.receiverId);
 
       if (receiverSocketId) {
-        // ✅ B đang online → Mark as delivered
+        // Mark as delivered
         await this.chatService.markAsDelivered(result.message.id);
 
-        // Gửi message cho B
+        // ✅ 3. Send to RECEIVER with CORRECT structure
         this.server.to(receiverSocketId).emit('newMessage', {
           message: {
             id: result.message.id,
-            text: result.message.content,
-            sender: data.senderId,
+            content: result.message.content,
+            senderId: data.senderId,
             timestamp: messageData.timestamp,
-            senderName: result.message.sender?.name,
-            avatar: result.message.sender?.avatar,
+            senderName: data.senderInfo?.name || 'Unknown',
+            avatar: data.senderInfo?.avatar || '',
           },
           conversation: {
             id: result.conversation.id,
-            avatar: result.message.sender?.avatar,
+            name: data.senderInfo?.name || 'Unknown User', // ✅ Thêm name
+            avatar: data.senderInfo?.avatar || '', // ✅ Avatar của người gửi
+            timestamp: messageData.timestamp, // ✅ Thêm timestamp
+            receiverId: data.senderId, // ✅ Với người nhận, senderId = receiverId
           },
         });
-        console.log(`✅ Sent to receiver ${data.receiverId}`);
 
-        // ✅ Notify sender (A) rằng message đã delivered
+        // ✅ 4. Notify sender that message was delivered
         client.emit('messageDelivered', {
           messageId: result.message.id,
           conversationId: result.conversation.id,
           deliveredAt: new Date().toISOString(),
         });
-        console.log(`✅✅ Message delivered (ID: ${result.message.id})`);
+
+        console.log(`✅✅ Message delivered to ${data.receiverId}`);
       } else {
-        console.log(
-          `⚠️ Receiver ${data.receiverId} is offline - message not delivered`,
-        );
+        console.log(`⚠️ Receiver ${data.receiverId} is offline`);
       }
 
-      return {
-        success: true,
-        message: result.message,
-        conversation: result.conversation,
-      };
+      return { success: true };
     } catch (error) {
       console.error('❌ Error sending message:', error);
-
-      // ✅ Emit error cho sender
       client.emit('messageError', {
         tempId: data.tempId,
         error: error.message,
       });
-
-      return {
-        success: false,
-        error: error.message,
-      };
+      return { success: false, error: error.message };
     }
   }
 
   /**
-   * ✅ NEW: Mark messages as seen (đã xem)
+   * ✅ Mark as seen
    */
   @SubscribeMessage('markAsSeen')
   async handleMarkAsSeen(
     @MessageBody()
     data: {
       conversationId: string;
-      userId: string; // User đang xem (B)
-      messageIds?: string[]; // Optional: specific messages
+      userId: string;
     },
     @ConnectedSocket() client: Socket,
   ) {
     try {
-      console.log(`👀 Marking as seen:`, {
-        conversationId: data.conversationId,
-        userId: data.userId,
-      });
-
-      // 1. Update DB - mark messages as read
       const result = await this.chatService.markMessagesAsRead(
         data.conversationId,
         data.userId,
       );
 
-      // 2. Lấy conversation để tìm sender
+      // Get conversation to find sender
       const conversations = await this.chatService.getUserConversations(
         data.userId,
       );
@@ -230,25 +303,19 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
         (c) => c.id === data.conversationId,
       );
 
-      if (!conversation) {
-        throw new Error('Conversation not found');
+      if (conversation) {
+        const senderId = conversation.receiverId;
+        const senderSocketId = this.connectedUsers.get(senderId);
+
+        if (senderSocketId) {
+          this.server.to(senderSocketId).emit('messagesSeen', {
+            conversationId: data.conversationId,
+            seenBy: data.userId,
+            timestamp: new Date().toISOString(),
+          });
+        }
       }
 
-      // 3. Tìm sender (người gửi messages)
-      const senderId = conversation.receiverId; // receiverId trong formatted conversation
-
-      // 4. ✅ Notify sender (A) rằng messages đã được seen
-      const senderSocketId = this.connectedUsers.get(senderId);
-      if (senderSocketId) {
-        this.server.to(senderSocketId).emit('messagesSeen', {
-          conversationId: data.conversationId,
-          seenBy: data.userId,
-          timestamp: new Date().toISOString(),
-        });
-        console.log(`👀 Notified ${senderId} that messages were seen`);
-      }
-
-      // 5. Confirm cho người xem
       client.emit('markAsSeenSuccess', {
         conversationId: data.conversationId,
         markedCount: result.markedCount,
@@ -257,32 +324,13 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       return { success: true };
     } catch (error) {
       console.error('❌ Error marking as seen:', error);
-      client.emit('markAsSeenError', {
-        error: error.message,
-      });
+      client.emit('markAsSeenError', { error: error.message });
       return { success: false, error: error.message };
     }
   }
 
   /**
-   * ✅ DEPRECATED: Renamed to markAsSeen for clarity
-   * Kept for backward compatibility
-   */
-  @SubscribeMessage('markAsRead')
-  async handleMarkAsRead(
-    @MessageBody()
-    data: {
-      conversationId: string;
-      userId: string;
-    },
-    @ConnectedSocket() client: Socket,
-  ) {
-    console.log('⚠️ markAsRead is deprecated, use markAsSeen instead');
-    return this.handleMarkAsSeen(data, client);
-  }
-
-  /**
-   * Typing indicator
+   * ✅ Typing indicator
    */
   @SubscribeMessage('typing')
   async handleTyping(
@@ -293,7 +341,6 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       receiverId: string;
       isTyping: boolean;
     },
-    @ConnectedSocket() client: Socket,
   ) {
     const receiverSocketId = this.connectedUsers.get(data.receiverId);
 
@@ -309,42 +356,9 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   /**
-   * Check if users are online
+   * Helper methods
    */
-  @SubscribeMessage('checkOnline')
-  async handleCheckOnline(
-    @MessageBody() data: { userIds: string[] },
-    @ConnectedSocket() client: Socket,
-  ) {
-    const onlineStatus = data.userIds.map((userId) => ({
-      userId,
-      isOnline: this.connectedUsers.has(userId),
-    }));
-
-    client.emit('onlineStatus', onlineStatus);
-
-    return { success: true, onlineStatus };
-  }
-
-  /**
-   * Get list of online users
-   */
-  @SubscribeMessage('getOnlineUsers')
-  async handleGetOnlineUsers(@ConnectedSocket() client: Socket) {
-    const onlineUsers = Array.from(this.connectedUsers.keys());
-
-    client.emit('onlineUsersList', {
-      users: onlineUsers,
-      count: onlineUsers.length,
-    });
-
-    return { success: true, users: onlineUsers };
-  }
-
-  /**
-   * Helper: Emit event to specific user
-   */
-  emitToUser(userId: string, event: string, data: any) {
+  emitToUser(userId: string, event: string, data: any): boolean {
     const socketId = this.connectedUsers.get(userId);
     if (socketId) {
       this.server.to(socketId).emit(event, data);
@@ -353,16 +367,10 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     return false;
   }
 
-  /**
-   * Helper: Check if user is online
-   */
   isUserOnline(userId: string): boolean {
     return this.connectedUsers.has(userId);
   }
 
-  /**
-   * Helper: Get all online users
-   */
   getOnlineUsers(): string[] {
     return Array.from(this.connectedUsers.keys());
   }

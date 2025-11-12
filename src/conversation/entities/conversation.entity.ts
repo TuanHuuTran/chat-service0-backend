@@ -1,4 +1,3 @@
-import { User } from 'src/auth/entities/auth.entity';
 import {
   Column,
   CreateDateColumn,
@@ -15,11 +14,11 @@ export class Conversation {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @ManyToOne(() => User)
-  user1: User;
+  @Column()
+  user1Id: string; // ✅ Chỉ lưu ID
 
-  @ManyToOne(() => User)
-  user2: User;
+  @Column()
+  user2Id: string; // ✅ Chỉ lưu ID
 
   @OneToMany(() => Message, (message) => message.conversation)
   messages: Message[];
@@ -36,6 +35,6 @@ export class Conversation {
   @CreateDateColumn({ type: 'timestamp' })
   createdAt: Date;
 
-  @CreateDateColumn({ type: 'timestamp' })
+  @UpdateDateColumn({ type: 'timestamp' })
   updatedAt: Date;
 }
