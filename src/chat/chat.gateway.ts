@@ -74,103 +74,6 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   /**
    * ✅ Send message với user info từ FE
    */
-  // @SubscribeMessage('sendMessage')
-  // async handleSendMessage(
-  //   @MessageBody()
-  //   data: {
-  //     senderId: string;
-  //     receiverId: string;
-  //     content: string;
-  //     conversationId?: string;
-  //     tempId: string;
-  //     senderInfo?: { name: string; avatar?: string };
-  //     receiverInfo?: { name: string; avatar?: string };
-  //   },
-  //   @ConnectedSocket() client: Socket,
-  // ) {
-  //   try {
-  //     console.log(
-  //       `📤 Sending message from ${data.senderId} to ${data.receiverId}`,
-  //     );
-
-  //     // Save message
-  //     const result = await this.chatService.sendMessage({
-  //       senderId: data.senderId,
-  //       receiverId: data.receiverId,
-  //       content: data.content,
-  //       conversationId: data.conversationId,
-  //       senderInfo: data.senderInfo,
-  //       receiverInfo: data.receiverInfo,
-  //     });
-
-  //     console.log('data messages send', result);
-  //     const messageData = {
-  //       id: result.message.id,
-  //       text: result.message.content,
-  //       timestamp: new Date(result.message.createdAt).toLocaleTimeString(
-  //         'en-US',
-  //         {
-  //           hour: 'numeric',
-  //           minute: '2-digit',
-  //         },
-  //       ),
-  //       isSent: true,
-  //       isDelivered: false,
-  //       isRead: false,
-  //     };
-
-  //     // Emit success to sender
-  //     client.emit('messageSent', {
-  //       tempId: data.tempId,
-  //       message: messageData,
-  //       conversationId: result.conversation.id,
-  //     });
-
-  //     // Check if receiver is online
-  //     const receiverSocketId = this.connectedUsers.get(data.receiverId);
-
-  //     if (receiverSocketId) {
-  //       // Mark as delivered
-  //       await this.chatService.markAsDelivered(result.message.id);
-
-  //       // Send to receiver
-  //       this.server.to(receiverSocketId).emit('newMessage', {
-  //         message: {
-  //           id: result.message.id,
-  //           text: result.message.content,
-  //           sender: data.senderId,
-  //           timestamp: messageData.timestamp,
-  //           senderName: data.senderInfo?.name || 'Unknown',
-  //           avatar: data.senderInfo?.avatar,
-  //         },
-  //         conversation: {
-  //           id: result.conversation.id,
-  //           avatar: data.senderInfo?.avatar,
-  //         },
-  //       });
-
-  //       // Notify sender that message was delivered
-  //       client.emit('messageDelivered', {
-  //         messageId: result.message.id,
-  //         conversationId: result.conversation.id,
-  //         deliveredAt: new Date().toISOString(),
-  //       });
-
-  //       console.log(`✅✅ Message delivered to ${data.receiverId}`);
-  //     } else {
-  //       console.log(`⚠️ Receiver ${data.receiverId} is offline`);
-  //     }
-
-  //     return { success: true };
-  //   } catch (error) {
-  //     console.error('❌ Error sending message:', error);
-  //     client.emit('messageError', {
-  //       tempId: data.tempId,
-  //       error: error.message,
-  //     });
-  //     return { success: false, error: error.message };
-  //   }
-  // }
 
   @SubscribeMessage('sendMessage')
   async handleSendMessage(
@@ -219,6 +122,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
         senderId: result.message.senderId,
         senderName: data.senderInfo?.name || 'Unknown',
         avatar: data.senderInfo?.avatar || '',
+        createdAt: result.message.createdAt,
       };
 
       // ✅ 1. Emit success to SENDER
@@ -235,6 +139,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
         // Mark as delivered
         await this.chatService.markAsDelivered(result.message.id);
 
+        console.log('messageData.timestamp', messageData.timestamp);
         // ✅ 3. Send to RECEIVER with CORRECT structure
         this.server.to(receiverSocketId).emit('newMessage', {
           message: {

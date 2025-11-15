@@ -14,6 +14,12 @@ export class UserChatStatus {
   @Column({ default: false })
   isOnline: boolean;
 
+  @Column({ nullable: true })
+  name: string;
+
+  @Column({ nullable: true })
+  avatar: string;
+
   @Column({ type: 'timestamp', nullable: true })
   lastSeen: Date;
 
