@@ -67,6 +67,8 @@ export class ChatController {
     const conversation = await this.chatService.findOrCreateConversation(
       dto.user1Id,
       dto.user2Id,
+      dto.user1Info,
+      dto.user2Info,
     );
 
     return this.chatService['formatConversation'](
@@ -74,6 +76,16 @@ export class ChatController {
       dto.user1Id,
       dto.user2Info,
     );
+  }
+
+  @Get('conversations')
+  async getConversation() {
+    return await this.chatService.getAllConversations();
+  }
+
+  @Get('messages')
+  async getAllMessages() {
+    return await this.chatService.getAllMessages();
   }
 
   /**
@@ -89,6 +101,7 @@ export class ChatController {
     if (!userId) {
       throw new Error('userId is required');
     }
+    console.log('userId', userId);
 
     return this.chatService.getMessages(
       conversationId,
@@ -103,6 +116,8 @@ export class ChatController {
    */
   @Get('users/:userId/conversations')
   async getUserConversations(@Param('userId') userId: string) {
+    console.log('userId', userId);
+
     return this.chatService.getUserConversations(userId);
   }
 
