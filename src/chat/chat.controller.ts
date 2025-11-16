@@ -114,11 +114,34 @@ export class ChatController {
   /**
    * ✅ Get user conversations
    */
+  // @Get('users/:userId/conversations')
+  // async getUserConversations(@Param('userId') userId: string) {
+  //   console.log('userId', userId);
+
+  //   return this.chatService.getUserConversations(userId);
+  // }
+
   @Get('users/:userId/conversations')
   async getUserConversations(@Param('userId') userId: string) {
-    console.log('userId', userId);
+    // ✅ Lấy danh sách conversations trước
+    const conversations = await this.chatService.getConversationsRaw(userId);
 
-    return this.chatService.getUserConversations(userId);
+    // ✅ Collect tất cả userIds cần fetch
+    const userIds = new Set<string>();
+    conversations.forEach((conv) => {
+      const otherUserId = conv.user1Id === userId ? conv.user2Id : conv.user1Id;
+      userIds.add(otherUserId);
+    });
+
+    // ✅ Fetch user info từ UserChatStatus
+    const usersInfo = await this.chatService.getUsersInfo(Array.from(userIds));
+
+    // ✅ Format với userInfo
+    return this.chatService.formatConversations(
+      conversations,
+      userId,
+      usersInfo,
+    );
   }
 
   /**

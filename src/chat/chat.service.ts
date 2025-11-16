@@ -8,7 +8,11 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { Conversation } from 'src/conversation/entities/conversation.entity';
 import { DataSource, Repository } from 'typeorm';
-import { Message } from 'src/conversation/entities/message.entity';
+import {
+  CallType,
+  Message,
+  MessageType,
+} from 'src/conversation/entities/message.entity';
 import { UserChatStatus } from 'src/conversation/entities/user-chat-status.entity';
 import { toVietnamTime } from 'src/utils/helper';
 
@@ -92,6 +96,9 @@ export class ChatService {
       this.updateUserInfo(user2Id, user2Info),
     ]);
 
+    const usersInfo = await this.getUsersInfo([user1Id, user2Id]);
+
+    console.log('usersInfo, usersInfo', usersInfo);
     // ✅ Tìm hoặc tạo conversation
     let conversation = await this.conversationRepo.findOne({
       where: [
@@ -346,6 +353,74 @@ export class ChatService {
   //   };
   // }
 
+  // async getMessages(
+  //   conversationId: string,
+  //   currentUserId: string,
+  //   limit = 50,
+  //   offset = 0,
+  //   providedUsersInfo?: Map<string, { name: string; avatar?: string }>,
+  // ) {
+  //   const conversation = await this.conversationRepo.findOne({
+  //     where: { id: conversationId },
+  //   });
+
+  //   if (!conversation) {
+  //     throw new NotFoundException('Conversation not found');
+  //   }
+
+  //   // ✅ Validate currentUserId thuộc conversation
+  //   if (
+  //     conversation.user1Id !== currentUserId &&
+  //     conversation.user2Id !== currentUserId
+  //   ) {
+  //     throw new ForbiddenException('User not part of this conversation');
+  //   }
+
+  //   const messages = await this.messageRepo.find({
+  //     where: { conversation: { id: conversationId } },
+  //     order: { createdAt: 'DESC' },
+  //     take: limit,
+  //     skip: offset,
+  //   });
+
+  //   const total = await this.messageRepo.count({
+  //     where: { conversation: { id: conversationId } },
+  //   });
+
+  //   // Format messages
+  //   const formattedMessages = messages.reverse().map((msg) => {
+  //     const senderInfo = providedUsersInfo?.get(msg.senderId);
+
+  //     // ✅ Normalize UUIDs trước khi so sánh
+  //     const normalizedSenderId = msg.senderId.trim().toLowerCase();
+  //     const normalizedCurrentUserId = currentUserId.trim().toLowerCase();
+  //     const isCurrentUser = normalizedSenderId === normalizedCurrentUserId;
+
+  //     return {
+  //       id: msg.id,
+  //       text: msg.content,
+  //       sender: isCurrentUser ? ('user' as const) : ('friend' as const),
+  //       timestamp: toVietnamTime(msg.createdAt.toISOString()),
+  //       senderName: senderInfo?.name || 'Unknown',
+  //       avatar: senderInfo?.avatar,
+  //       reaction: msg.reaction,
+  //       isSent: msg.isSent,
+  //       isDelivered: msg.isDelivered,
+  //       isRead: msg.isRead,
+  //       deliveredAt: msg.deliveredAt?.toISOString(),
+  //       readAt: msg.readAt?.toISOString(),
+  //     };
+  //   });
+
+  //   return {
+  //     conversation: await this.formatConversation(conversation, currentUserId),
+  //     messages: formattedMessages,
+  //     total,
+  //   };
+  // }
+
+  // ✅ Sửa method getMessages trong chat.service.ts
+
   async getMessages(
     conversationId: string,
     currentUserId: string,
@@ -380,11 +455,10 @@ export class ChatService {
       where: { conversation: { id: conversationId } },
     });
 
-    // Format messages
+    // ✅ Format messages WITH messageType and metadata
     const formattedMessages = messages.reverse().map((msg) => {
       const senderInfo = providedUsersInfo?.get(msg.senderId);
 
-      // ✅ Normalize UUIDs trước khi so sánh
       const normalizedSenderId = msg.senderId.trim().toLowerCase();
       const normalizedCurrentUserId = currentUserId.trim().toLowerCase();
       const isCurrentUser = normalizedSenderId === normalizedCurrentUserId;
@@ -402,6 +476,11 @@ export class ChatService {
         isRead: msg.isRead,
         deliveredAt: msg.deliveredAt?.toISOString(),
         readAt: msg.readAt?.toISOString(),
+        createdAt: msg.createdAt.toISOString(),
+
+        // ✅ THÊM messageType và metadata
+        messageType: msg.messageType || 'text',
+        metadata: msg.metadata || undefined,
       };
     });
 
@@ -589,4 +668,334 @@ export class ChatService {
       await queryRunner.release();
     }
   }
+
+  /**
+   * ✅ Save call as message
+   */
+  // async saveCallAsMessage(data: {
+  //   callerId: string;
+  //   receiverId: string;
+  //   duration: number;
+  //   callType: 'video' | 'voice';
+  //   callId: string;
+  //   callStatus?: 'answered' | 'missed' | 'declined' | 'cancelled';
+  // }) {
+  //   try {
+  //     // ✅ Find or create conversation
+  //     const conversation = await this.findOrCreateConversation(
+  //       data.callerId,
+  //       data.receiverId,
+  //     );
+
+  //     // ✅ Format content based on call status
+  //     let content = '';
+  //     const emoji = data.callType === 'video' ? '📹' : '📞';
+
+  //     if (data.callStatus === 'missed') {
+  //       content = `${emoji} Cuộc gọi nhỡ`;
+  //     } else if (data.callStatus === 'declined') {
+  //       content = `${emoji} Cuộc gọi bị từ chối`;
+  //     } else if (data.callStatus === 'cancelled') {
+  //       content = `${emoji} Cuộc gọi đã hủy`;
+  //     } else if (data.duration > 0) {
+  //       content = `${emoji} Cuộc gọi ${this.formatDuration(data.duration)}`;
+  //     } else {
+  //       content = `${emoji} Cuộc gọi không trả lời`;
+  //     }
+
+  //     // ✅ Create message with call metadata
+  //     const message = this.messageRepo.create({
+  //       conversation,
+  //       senderId: data.callerId,
+  //       content,
+  //       messageType: MessageType.CALL,
+  //       metadata: {
+  //         callId: data.callId,
+  //         duration: data.duration,
+  //         callType: data.callType as CallType,
+  //         callStatus:
+  //           data.callStatus || (data.duration > 0 ? 'answered' : 'missed'),
+  //       },
+  //       isSent: true,
+  //       isDelivered: true,
+  //       isRead: false,
+  //       createdAt: new Date(),
+  //     });
+
+  //     await this.messageRepo.save(message);
+
+  //     // ✅ Update conversation lastMessage
+  //     await this.conversationRepo.update(conversation.id, {
+  //       lastMessage: message,
+  //       lastMessageId: message.id,
+  //       updatedAt: new Date(),
+  //     });
+
+  //     console.log('✅ Call saved as message:', message.id);
+
+  //     return {
+  //       success: true,
+  //       message,
+  //       conversation,
+  //     };
+  //   } catch (error) {
+  //     console.error('❌ Error saving call as message:', error);
+  //     throw error;
+  //   }
+  // }
+
+  // ✅ chat.service.ts - saveCallAsMessage
+
+  // async saveCallAsMessage(data: {
+  //   callerId: string;
+  //   receiverId: string;
+  //   duration: number;
+  //   callType: 'video' | 'voice';
+  //   callId: string;
+  //   callStatus?: 'answered' | 'missed' | 'declined' | 'cancelled';
+  // }) {
+  //   try {
+  //     console.log('💾 Saving call as message:', {
+  //       callerId: data.callerId,
+  //       receiverId: data.receiverId,
+  //       duration: data.duration,
+  //       callType: data.callType,
+  //       callStatus: data.callStatus,
+  //     });
+
+  //     // ✅ Find or create conversation
+  //     const conversation = await this.findOrCreateConversation(
+  //       data.callerId,
+  //       data.receiverId,
+  //     );
+
+  //     // ✅ Format content based on call status
+  //     let content = '';
+  //     const emoji = data.callType === 'video' ? '📹' : '📞';
+
+  //     if (data.callStatus === 'missed') {
+  //       content = `${emoji} Cuộc gọi nhỡ`;
+  //     } else if (data.callStatus === 'declined') {
+  //       content = `${emoji} Cuộc gọi bị từ chối`;
+  //     } else if (data.callStatus === 'cancelled') {
+  //       content = `${emoji} Cuộc gọi đã hủy`;
+  //     } else if (data.duration > 0) {
+  //       content = `${emoji} Cuộc gọi ${this.formatDuration(data.duration)}`;
+  //     } else {
+  //       content = `${emoji} Cuộc gọi không trả lời`;
+  //     }
+
+  //     // ✅ QUAN TRỌNG: senderId phải là callerId (người gọi)
+  //     const message = this.messageRepo.create({
+  //       conversation,
+  //       senderId: data.callerId, // ✅ Người gọi = người tạo message
+  //       content,
+  //       messageType: MessageType.CALL,
+  //       metadata: {
+  //         callId: data.callId,
+  //         duration: data.duration,
+  //         callType: data.callType as CallType,
+  //         callStatus:
+  //           data.callStatus || (data.duration > 0 ? 'answered' : 'missed'),
+  //       },
+  //       isSent: true,
+  //       isDelivered: true,
+  //       isRead: false,
+  //       createdAt: new Date(),
+  //     });
+
+  //     await this.messageRepo.save(message);
+
+  //     console.log('✅ Call message saved:', {
+  //       messageId: message.id,
+  //       senderId: message.senderId,
+  //       content: message.content,
+  //       messageType: message.messageType,
+  //     });
+
+  //     // ✅ Update conversation lastMessage
+  //     await this.conversationRepo.update(conversation.id, {
+  //       lastMessage: message,
+  //       lastMessageId: message.id,
+  //       updatedAt: new Date(),
+  //     });
+
+  //     return {
+  //       success: true,
+  //       message,
+  //       conversation,
+  //     };
+  //   } catch (error) {
+  //     console.error('❌ Error saving call as message:', error);
+  //     throw error;
+  //   }
+  // }
+
+  // ✅ FIXED: chat.service.ts - saveCallAsMessage
+  // Thay thế method saveCallAsMessage hiện tại
+
+  async saveCallAsMessage(data: {
+    callerId: string;
+    receiverId: string;
+    duration: number;
+    callType: 'video' | 'voice';
+    callId: string;
+    callStatus?: 'answered' | 'missed' | 'declined' | 'cancelled';
+    // ✅ THÊM: user info parameters
+    callerInfo?: { name: string; avatar?: string };
+    receiverInfo?: { name: string; avatar?: string };
+  }) {
+    try {
+      console.log('💾 Saving call as message:', {
+        callerId: data.callerId,
+        receiverId: data.receiverId,
+        duration: data.duration,
+        callType: data.callType,
+        callStatus: data.callStatus,
+        hasCallerInfo: !!data.callerInfo,
+        hasReceiverInfo: !!data.receiverInfo,
+      });
+
+      // ✅ QUAN TRỌNG: Truyền user info vào findOrCreateConversation
+      const conversation = await this.findOrCreateConversation(
+        data.callerId,
+        data.receiverId,
+        // data.callerInfo, // ✅ Truyền caller info
+        // data.receiverInfo, // ✅ Truyền receiver info
+      );
+
+      // ✅ Format content based on call status
+      let content = '';
+      const emoji = data.callType === 'video' ? '📹' : '📞';
+
+      if (data.callStatus === 'missed') {
+        content = `${emoji} Cuộc gọi nhỡ`;
+      } else if (data.callStatus === 'declined') {
+        content = `${emoji} Cuộc gọi bị từ chối`;
+      } else if (data.callStatus === 'cancelled') {
+        content = `${emoji} Cuộc gọi đã hủy`;
+      } else if (data.duration > 0) {
+        content = `${emoji} Cuộc gọi ${this.formatDuration(data.duration)}`;
+      } else {
+        content = `${emoji} Cuộc gọi không trả lời`;
+      }
+
+      // ✅ Create message with call metadata
+      const message = this.messageRepo.create({
+        conversation,
+        senderId: data.callerId, // ✅ Luôn là người gọi
+        content,
+        messageType: MessageType.CALL,
+        metadata: {
+          callId: data.callId,
+          duration: data.duration,
+          callType: data.callType as CallType,
+          callStatus:
+            data.callStatus || (data.duration > 0 ? 'answered' : 'missed'),
+        },
+        isSent: true,
+        isDelivered: true,
+        isRead: false,
+        createdAt: new Date(),
+      });
+
+      await this.messageRepo.save(message);
+
+      console.log('✅ Call message saved:', {
+        messageId: message.id,
+        senderId: message.senderId,
+        content: message.content,
+        messageType: message.messageType,
+      });
+
+      // ✅ Update conversation lastMessage
+      await this.conversationRepo.update(conversation.id, {
+        lastMessage: message,
+        lastMessageId: message.id,
+        updatedAt: new Date(),
+      });
+
+      return {
+        success: true,
+        message,
+        conversation,
+      };
+    } catch (error) {
+      console.error('❌ Error saving call as message:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * ✅ Format duration helper
+   */
+  private formatDuration(seconds: number): string {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  }
+
+  // ✅ Method mới: Get conversations raw (không format)
+  async getConversationsRaw(userId: string) {
+    return await this.conversationRepo
+      .createQueryBuilder('conversation')
+      .leftJoinAndSelect('conversation.lastMessage', 'lastMessage')
+      .where(
+        'conversation.user1Id = :userId OR conversation.user2Id = :userId',
+        { userId },
+      )
+      .orderBy('conversation.updatedAt', 'DESC')
+      .getMany();
+  }
+
+  // ✅ Method mới: Fetch multiple users info
+  async getUsersInfo(
+    userIds: string[],
+  ): Promise<Map<string, { name: string; avatar?: string }>> {
+    if (userIds.length === 0) return new Map();
+
+    const usersStatus = await this.userChatStatusRepo
+      .createQueryBuilder('status')
+      .where('status.userId IN (:...userIds)', { userIds })
+      .getMany();
+
+    const map = new Map<string, { name: string; avatar?: string }>();
+
+    usersStatus.forEach((status) => {
+      if (status.name) {
+        map.set(status.userId, {
+          name: status.name,
+          avatar: status.avatar || '',
+        });
+      }
+    });
+
+    return map;
+  }
+
+  // ✅ Method mới: Format multiple conversations
+  async formatConversations(
+    conversations: Conversation[],
+    currentUserId: string,
+    usersInfo: Map<string, { name: string; avatar?: string }>,
+  ) {
+    return Promise.all(
+      conversations.map((conv) => {
+        const otherUserId =
+          conv.user1Id === currentUserId ? conv.user2Id : conv.user1Id;
+        const otherUserInfo = usersInfo.get(otherUserId);
+
+        return this.formatConversation(conv, currentUserId, otherUserInfo);
+      }),
+    );
+  }
+
+  /**
+   * ✅ Format duration helper
+   */
+  // private formatDuration(seconds: number): string {
+  //   const mins = Math.floor(seconds / 60);
+  //   const secs = seconds % 60;
+  //   return `${mins}:${secs.toString().padStart(2, '0')}`;
+  // }
 }
