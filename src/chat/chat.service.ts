@@ -155,6 +155,109 @@ export class ChatService {
   /**
    * ✅ Send message (không cần User entity)
    */
+  // async sendMessage(data: {
+  //   senderId: string;
+  //   receiverId: string;
+  //   content: string;
+  //   conversationId?: string;
+  //   senderInfo?: { name: string; avatar?: string };
+  //   receiverInfo?: { name: string; avatar?: string };
+  // }) {
+  //   // Validate
+  //   if (
+  //     !this.isValidUUID(data.senderId) ||
+  //     !this.isValidUUID(data.receiverId)
+  //   ) {
+  //     throw new BadRequestException('Invalid user ID format');
+  //   }
+
+  //   // Ensure UserChatStatus exists
+  //   // await Promise.all([
+  //   //   this.ensureUserChatStatus(data.senderId),
+  //   //   this.ensureUserChatStatus(data.receiverId),
+  //   // ]);
+
+  //   // Tìm hoặc tạo conversation
+  //   let conversation: Conversation;
+
+  //   if (data.conversationId) {
+  //     const found = await this.conversationRepo.findOne({
+  //       where: { id: data.conversationId },
+  //       relations: ['lastMessage'],
+  //     });
+
+  //     if (!found) {
+  //       throw new NotFoundException('Conversation not found');
+  //     }
+
+  //     conversation = found;
+  //   } else {
+  //     const existing = await this.conversationRepo.findOne({
+  //       where: [
+  //         { user1Id: data.senderId, user2Id: data.receiverId },
+  //         { user1Id: data.receiverId, user2Id: data.senderId },
+  //       ],
+  //       relations: ['lastMessage'],
+  //     });
+
+  //     if (existing) {
+  //       conversation = existing;
+  //     } else {
+  //       conversation = this.conversationRepo.create({
+  //         user1Id: data.senderId,
+  //         user2Id: data.receiverId,
+  //         unreadCount: 0,
+  //       });
+  //       await this.conversationRepo.save(conversation);
+  //     }
+  //   }
+
+  //   // Tạo message
+  //   const message = this.messageRepo.create({
+  //     conversation,
+  //     senderId: data.senderId,
+  //     content: data.content,
+  //     isSent: true,
+  //     isDelivered: false,
+  //     isRead: false,
+  //     createdAt: new Date(),
+  //   });
+  //   await this.messageRepo.save(message);
+
+  //   // Update conversation lastMessage
+  //   await this.conversationRepo.update(conversation.id, {
+  //     lastMessage: message,
+  //     lastMessageId: message.id,
+  //     updatedAt: new Date(),
+  //   });
+
+  //   // Load lại conversation
+  //   const updatedConversation = await this.conversationRepo.findOne({
+  //     where: { id: conversation.id },
+  //     relations: ['lastMessage'],
+  //   });
+
+  //   // ✅ Null check before using
+  //   if (!updatedConversation) {
+  //     throw new NotFoundException('Failed to load updated conversation');
+  //   }
+
+  //   // Format response với user info từ FE (nếu có)
+  //   const formattedConversation = await this.formatConversation(
+  //     updatedConversation,
+  //     data.senderId,
+  //     data.receiverInfo,
+  //   );
+
+  //   return {
+  //     message: {
+  //       ...message,
+  //       senderInfo: data.senderInfo, // ✅ Trả về user info từ FE
+  //     },
+  //     conversation: formattedConversation,
+  //   };
+  // }
+
   async sendMessage(data: {
     senderId: string;
     receiverId: string;
@@ -162,6 +265,8 @@ export class ChatService {
     conversationId?: string;
     senderInfo?: { name: string; avatar?: string };
     receiverInfo?: { name: string; avatar?: string };
+    images?: string[]; // ✅ NEW
+    messageType?: MessageType; // ✅ NEW (use enum)
   }) {
     // Validate
     if (
@@ -170,12 +275,6 @@ export class ChatService {
     ) {
       throw new BadRequestException('Invalid user ID format');
     }
-
-    // Ensure UserChatStatus exists
-    // await Promise.all([
-    //   this.ensureUserChatStatus(data.senderId),
-    //   this.ensureUserChatStatus(data.receiverId),
-    // ]);
 
     // Tìm hoặc tạo conversation
     let conversation: Conversation;
@@ -212,17 +311,36 @@ export class ChatService {
       }
     }
 
-    // Tạo message
+    // ✅ Create message with images support
+    // Fix: Explicitly convert to MessageType enum
+    const messageType: MessageType =
+      data.images && data.images.length > 0
+        ? MessageType.IMAGE
+        : MessageType.TEXT;
+
     const message = this.messageRepo.create({
-      conversation,
+      conversationId: conversation.id, // ✅ Use conversationId instead of conversation object
       senderId: data.senderId,
       content: data.content,
+      messageType, // ✅ Now properly typed as MessageType
+      metadata:
+        data.images && data.images.length > 0
+          ? { images: data.images } // ✅ Store images in metadata
+          : undefined,
       isSent: true,
       isDelivered: false,
       isRead: false,
       createdAt: new Date(),
     });
+
     await this.messageRepo.save(message);
+
+    console.log('✅ Message created with images:', {
+      messageId: message.id,
+      messageType: message.messageType,
+      hasImages: !!message.metadata?.images,
+      imageCount: message.metadata?.images?.length || 0,
+    });
 
     // Update conversation lastMessage
     await this.conversationRepo.update(conversation.id, {
@@ -237,12 +355,10 @@ export class ChatService {
       relations: ['lastMessage'],
     });
 
-    // ✅ Null check before using
     if (!updatedConversation) {
       throw new NotFoundException('Failed to load updated conversation');
     }
 
-    // Format response với user info từ FE (nếu có)
     const formattedConversation = await this.formatConversation(
       updatedConversation,
       data.senderId,
@@ -252,7 +368,7 @@ export class ChatService {
     return {
       message: {
         ...message,
-        senderInfo: data.senderInfo, // ✅ Trả về user info từ FE
+        senderInfo: data.senderInfo,
       },
       conversation: formattedConversation,
     };

@@ -9,6 +9,7 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { ChatService } from './chat.service';
+import { MessageType } from 'src/conversation/entities/message.entity';
 
 interface CallUser {
   userId: string;
@@ -101,6 +102,114 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   // 💬 CHAT MESSAGES (Existing)
   // ==========================================
 
+  // @SubscribeMessage('sendMessage')
+  // async handleSendMessage(
+  //   @MessageBody()
+  //   data: {
+  //     senderId: string;
+  //     receiverId: string;
+  //     content: string;
+  //     conversationId?: string;
+  //     tempId: string;
+  //     senderInfo?: { name: string; avatar?: string };
+  //     receiverInfo?: { name: string; avatar?: string };
+  //   },
+  //   @ConnectedSocket() client: Socket,
+  // ) {
+  //   try {
+  //     console.log(
+  //       `📤 Sending message from ${data.senderId} to ${data.receiverId}`,
+  //     );
+
+  //     const usersInfo = await this.chatService.getUsersInfo([
+  //       data.receiverId,
+  //       data.senderId,
+  //     ]);
+  //     const receiverInfo = usersInfo.get(data.receiverId);
+  //     const senderInfo = usersInfo.get(data.senderId);
+
+  //     const result = await this.chatService.sendMessage({
+  //       senderId: data.senderId,
+  //       receiverId: data.receiverId,
+  //       content: data.content,
+  //       conversationId: data.conversationId,
+  //       senderInfo: senderInfo,
+  //       receiverInfo: receiverInfo,
+  //     });
+
+  //     console.log('✅ Message saved:', result);
+
+  //     const messageData = {
+  //       id: result.message.id,
+  //       content: result.message.content,
+  //       timestamp: new Date(result.message.createdAt).toLocaleTimeString(
+  //         'vi-VN',
+  //         {
+  //           hour: '2-digit',
+  //           minute: '2-digit',
+  //         },
+  //       ),
+  //       isSent: true,
+  //       isDelivered: false,
+  //       isRead: false,
+  //       senderId: result.message.senderId,
+  //       senderName: result?.message?.senderInfo?.name || 'Unknown',
+  //       avatar: result?.message?.senderInfo?.avatar || '',
+  //       createdAt: result.message.createdAt,
+  //     };
+
+  //     console.log('messageData', messageData);
+  //     client.emit('messageSent', {
+  //       tempId: data.tempId,
+  //       message: messageData,
+  //       conversationId: result.conversation.id,
+  //     });
+
+  //     const receiverSocketId = this.connectedUsers.get(data.receiverId);
+
+  //     if (receiverSocketId) {
+  //       await this.chatService.markAsDelivered(result.message.id);
+
+  //       this.server.to(receiverSocketId).emit('newMessage', {
+  //         message: {
+  //           id: result.message.id,
+  //           content: result.message.content,
+  //           senderId: data.senderId,
+  //           timestamp: messageData.timestamp,
+  //           senderName: result?.message?.senderInfo?.name || 'Unknown',
+  //           avatar: result?.message?.senderInfo?.avatar || '',
+  //         },
+  //         conversation: {
+  //           id: result.conversation.id,
+  //           name: result?.message?.senderInfo?.name || 'Unknown User',
+  //           avatar: result?.message?.senderInfo?.avatar || '',
+  //           timestamp: messageData.timestamp,
+  //           receiverId: data.senderId,
+  //         },
+  //       });
+
+  //       client.emit('messageDelivered', {
+  //         messageId: result.message.id,
+  //         conversationId: result.conversation.id,
+  //         deliveredAt: new Date().toISOString(),
+  //       });
+
+  //       console.log(`✅✅ Message delivered to ${data.receiverId}`);
+  //     } else {
+  //       console.log(`⚠️ Receiver ${data.receiverId} is offline`);
+  //     }
+
+  //     return { success: true };
+  //   } catch (error) {
+  //     console.error('❌ Error sending message:', error);
+  //     client.emit('messageError', {
+  //       tempId: data.tempId,
+  //       error: error.message,
+  //     });
+  //     return { success: false, error: error.message };
+  //   }
+  // }
+
   @SubscribeMessage('sendMessage')
   async handleSendMessage(
     @MessageBody()
@@ -112,12 +221,19 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       tempId: string;
       senderInfo?: { name: string; avatar?: string };
       receiverInfo?: { name: string; avatar?: string };
+      images?: string[]; // ✅ NEW: Array of image URLs
+      messageType?: MessageType; // ✅ NEW: Message type (use enum)
     },
     @ConnectedSocket() client: Socket,
   ) {
     try {
       console.log(
         `📤 Sending message from ${data.senderId} to ${data.receiverId}`,
+        {
+          hasImages: !!data.images,
+          imageCount: data.images?.length || 0,
+          messageType: data.messageType,
+        },
       );
 
       const usersInfo = await this.chatService.getUsersInfo([
@@ -127,6 +243,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const receiverInfo = usersInfo.get(data.receiverId);
       const senderInfo = usersInfo.get(data.senderId);
 
+      // ✅ Pass images to service
       const result = await this.chatService.sendMessage({
         senderId: data.senderId,
         receiverId: data.receiverId,
@@ -134,6 +251,8 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
         conversationId: data.conversationId,
         senderInfo: senderInfo,
         receiverInfo: receiverInfo,
+        images: data.images, // ✅ NEW
+        messageType: data.messageType, // ✅ Pass enum directly
       });
 
       console.log('✅ Message saved:', result);
@@ -155,9 +274,10 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
         senderName: result?.message?.senderInfo?.name || 'Unknown',
         avatar: result?.message?.senderInfo?.avatar || '',
         createdAt: result.message.createdAt,
+        images: result.message.metadata?.images || [], // ✅ NEW
+        messageType: result.message.messageType || 'text', // ✅ NEW
       };
 
-      console.log('messageData', messageData);
       client.emit('messageSent', {
         tempId: data.tempId,
         message: messageData,
@@ -177,6 +297,8 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
             timestamp: messageData.timestamp,
             senderName: result?.message?.senderInfo?.name || 'Unknown',
             avatar: result?.message?.senderInfo?.avatar || '',
+            images: result.message.metadata?.images || [], // ✅ NEW
+            messageType: result.message.messageType || 'text', // ✅ NEW
           },
           conversation: {
             id: result.conversation.id,
