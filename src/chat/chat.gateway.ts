@@ -491,52 +491,171 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     return { success: true };
   }
 
+  // @SubscribeMessage('reject-call')
+  // async handleRejectCall(
+  //   @ConnectedSocket() client: Socket,
+  //   @MessageBody()
+  //   data: {
+  //     callId: string;
+  //     toUserId: string;
+  //   },
+  // ) {
+  //   const targetUser = this.callUsers.get(data.toUserId);
+
+  //   if (targetUser) {
+  //     this.server.to(targetUser.socketId).emit('call-rejected', {
+  //       callId: data.callId,
+  //     });
+  //   }
+
+  //   const activeCall = this.activeCalls.get(data.callId);
+  //   if (activeCall) {
+  //     try {
+  //       const callerInfo = this.callUsers.get(activeCall.caller);
+  //       const receiverInfo = this.callUsers.get(data.toUserId);
+
+  //       await this.chatService.saveCallAsMessage({
+  //         callerId: activeCall.caller,
+  //         receiverId: data.toUserId,
+  //         duration: 0,
+  //         callType: 'video',
+  //         callId: data.callId,
+  //         callStatus: 'declined',
+  //         callerInfo: callerInfo
+  //           ? { name: callerInfo.name, avatar: callerInfo.avatar }
+  //           : undefined,
+  //         receiverInfo: receiverInfo
+  //           ? { name: receiverInfo.name, avatar: receiverInfo.avatar }
+  //           : undefined,
+  //       });
+  //     } catch (error) {
+  //       console.error('❌ Error saving rejected call:', error);
+  //     }
+  //   }
+
+  //   this.activeCalls.delete(data.callId);
+  //   console.log(`❌ Call ${data.callId} rejected`);
+  //   return { success: true };
+  // }
+
   @SubscribeMessage('reject-call')
-  async handleRejectCall(
-    @ConnectedSocket() client: Socket,
-    @MessageBody()
-    data: {
-      callId: string;
-      toUserId: string;
-    },
-  ) {
-    const targetUser = this.callUsers.get(data.toUserId);
+async handleRejectCall(
+  @ConnectedSocket() client: Socket,
+  @MessageBody()
+  data: {
+    callId: string;
+    toUserId: string;
+  },
+) {
+  const targetUser = this.callUsers.get(data.toUserId);
 
-    if (targetUser) {
-      this.server.to(targetUser.socketId).emit('call-rejected', {
-        callId: data.callId,
-      });
-    }
-
-    const activeCall = this.activeCalls.get(data.callId);
-    if (activeCall) {
-      try {
-        const callerInfo = this.callUsers.get(activeCall.caller);
-        const receiverInfo = this.callUsers.get(data.toUserId);
-
-        await this.chatService.saveCallAsMessage({
-          callerId: activeCall.caller,
-          receiverId: data.toUserId,
-          duration: 0,
-          callType: 'video',
-          callId: data.callId,
-          callStatus: 'declined',
-          callerInfo: callerInfo
-            ? { name: callerInfo.name, avatar: callerInfo.avatar }
-            : undefined,
-          receiverInfo: receiverInfo
-            ? { name: receiverInfo.name, avatar: receiverInfo.avatar }
-            : undefined,
-        });
-      } catch (error) {
-        console.error('❌ Error saving rejected call:', error);
-      }
-    }
-
-    this.activeCalls.delete(data.callId);
-    console.log(`❌ Call ${data.callId} rejected`);
-    return { success: true };
+  if (targetUser) {
+    this.server.to(targetUser.socketId).emit('call-rejected', {
+      callId: data.callId,
+    });
   }
+
+  const activeCall = this.activeCalls.get(data.callId);
+  if (activeCall) {
+    try {
+      const callerInfo = this.callUsers.get(activeCall.caller);
+      const receiverInfo = this.callUsers.get(data.toUserId);
+
+      // ✅ Lưu message vào database
+      const result = await this.chatService.saveCallAsMessage({
+        callerId: activeCall.caller,
+        receiverId: data.toUserId,
+        duration: 0,
+        callType: 'video',
+        callId: data.callId,
+        callStatus: 'declined',
+        callerInfo: callerInfo
+          ? { name: callerInfo.name, avatar: callerInfo.avatar }
+          : undefined,
+        receiverInfo: receiverInfo
+          ? { name: receiverInfo.name, avatar: receiverInfo.avatar }
+          : undefined,
+      });
+
+      console.log('✅ Rejected call message saved:', {
+        messageId: result.message.id,
+        callerId: activeCall.caller,
+        receiverId: data.toUserId,
+      });
+
+      // ✅ THÊM: Emit newMessage cho cả hai người dùng
+      const baseMessage = {
+        id: result.message.id,
+        content: result.message.content,
+        timestamp: new Date(result.message.createdAt).toLocaleTimeString(
+          'vi-VN',
+          { hour: '2-digit', minute: '2-digit' },
+        ),
+        createdAt: result.message.createdAt,
+        messageType: result.message.messageType,
+        metadata: result.message.metadata,
+      };
+
+      // ✅ Emit to CALLER (người gọi)
+      const callerSocketId = this.connectedUsers.get(activeCall.caller);
+      if (callerSocketId) {
+        const callerPayload = {
+          message: {
+            ...baseMessage,
+            senderId: result.message.senderId,
+            senderName: callerInfo?.name || 'You',
+          },
+          conversation: {
+            id: result.conversation.id,
+            name: receiverInfo?.name || 'Unknown',
+            avatar: receiverInfo?.avatar || '',
+            receiverId: data.toUserId,
+          },
+        };
+
+        console.log('📤 Emit rejected call to CALLER:', {
+          userId: activeCall.caller,
+          socketId: callerSocketId,
+        });
+
+        this.server.to(callerSocketId).emit('newMessage', callerPayload);
+      }
+
+      // ✅ Emit to CALLEE (người nhận - người từ chối)
+      const calleeSocketId = this.connectedUsers.get(data.toUserId);
+      if (calleeSocketId) {
+        const calleePayload = {
+          message: {
+            ...baseMessage,
+            senderId: result.message.senderId,
+            senderName: callerInfo?.name || 'Unknown',
+          },
+          conversation: {
+            id: result.conversation.id,
+            name: callerInfo?.name || 'Unknown',
+            avatar: callerInfo?.avatar || '',
+            receiverId: activeCall.caller,
+          },
+        };
+
+        console.log('📤 Emit rejected call to CALLEE:', {
+          userId: data.toUserId,
+          socketId: calleeSocketId,
+        });
+
+        this.server.to(calleeSocketId).emit('newMessage', calleePayload);
+      }
+
+      console.log('✅✅ Rejected call messages emitted successfully');
+    } catch (error) {
+      console.error('❌ Error saving rejected call:', error);
+    }
+  }
+
+  this.activeCalls.delete(data.callId);
+  console.log(`❌ Call ${data.callId} rejected`);
+  return { success: true };
+}
 
   @SubscribeMessage('ice-candidate')
   handleIceCandidate(
@@ -745,54 +864,176 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     return { success: true };
   }
 
+  // @SubscribeMessage('cancel-call')
+  // async handleCancelCall(
+  //   @ConnectedSocket() client: Socket,
+  //   @MessageBody()
+  //   data: {
+  //     callId: string;
+  //     toUserId: string;
+  //   },
+  // ) {
+  //   const targetUser = this.callUsers.get(data.toUserId);
+
+  //   if (targetUser) {
+  //     this.server.to(targetUser.socketId).emit('call-cancelled', {
+  //       callId: data.callId,
+  //     });
+  //   }
+
+  //   const activeCall = this.activeCalls.get(data.callId);
+  //   const callerId = activeCall?.caller;
+
+  //   if (callerId) {
+  //     try {
+  //       const callerInfo = this.callUsers.get(callerId);
+  //       const receiverInfo = this.callUsers.get(data.toUserId);
+
+  //       await this.chatService.saveCallAsMessage({
+  //         callerId,
+  //         receiverId: data.toUserId,
+  //         duration: 0,
+  //         callType: 'video',
+  //         callId: data.callId,
+  //         callStatus: 'cancelled',
+  //         callerInfo: callerInfo
+  //           ? { name: callerInfo.name, avatar: callerInfo.avatar }
+  //           : undefined,
+  //         receiverInfo: receiverInfo
+  //           ? { name: receiverInfo.name, avatar: receiverInfo.avatar }
+  //           : undefined,
+  //       });
+  //     } catch (error) {
+  //       console.error('❌ Error saving cancelled call:', error);
+  //     }
+  //   }
+
+  //   this.activeCalls.delete(data.callId);
+  //   console.log(`🚫 Call ${data.callId} cancelled`);
+  //   return { success: true };
+  // }
+
   @SubscribeMessage('cancel-call')
-  async handleCancelCall(
-    @ConnectedSocket() client: Socket,
-    @MessageBody()
-    data: {
-      callId: string;
-      toUserId: string;
-    },
-  ) {
-    const targetUser = this.callUsers.get(data.toUserId);
+async handleCancelCall(
+  @ConnectedSocket() client: Socket,
+  @MessageBody()
+  data: {
+    callId: string;
+    toUserId: string;
+  },
+) {
+  const targetUser = this.callUsers.get(data.toUserId);
 
-    if (targetUser) {
-      this.server.to(targetUser.socketId).emit('call-cancelled', {
-        callId: data.callId,
-      });
-    }
-
-    const activeCall = this.activeCalls.get(data.callId);
-    const callerId = activeCall?.caller;
-
-    if (callerId) {
-      try {
-        const callerInfo = this.callUsers.get(callerId);
-        const receiverInfo = this.callUsers.get(data.toUserId);
-
-        await this.chatService.saveCallAsMessage({
-          callerId,
-          receiverId: data.toUserId,
-          duration: 0,
-          callType: 'video',
-          callId: data.callId,
-          callStatus: 'cancelled',
-          callerInfo: callerInfo
-            ? { name: callerInfo.name, avatar: callerInfo.avatar }
-            : undefined,
-          receiverInfo: receiverInfo
-            ? { name: receiverInfo.name, avatar: receiverInfo.avatar }
-            : undefined,
-        });
-      } catch (error) {
-        console.error('❌ Error saving cancelled call:', error);
-      }
-    }
-
-    this.activeCalls.delete(data.callId);
-    console.log(`🚫 Call ${data.callId} cancelled`);
-    return { success: true };
+  if (targetUser) {
+    this.server.to(targetUser.socketId).emit('call-cancelled', {
+      callId: data.callId,
+    });
   }
+
+  const activeCall = this.activeCalls.get(data.callId);
+  const callerId = activeCall?.caller;
+
+  if (callerId) {
+    try {
+      const callerInfo = this.callUsers.get(callerId);
+      const receiverInfo = this.callUsers.get(data.toUserId);
+
+      // ✅ Lưu message vào database
+      const result = await this.chatService.saveCallAsMessage({
+        callerId,
+        receiverId: data.toUserId,
+        duration: 0,
+        callType: 'video',
+        callId: data.callId,
+        callStatus: 'cancelled',
+        callerInfo: callerInfo
+          ? { name: callerInfo.name, avatar: callerInfo.avatar }
+          : undefined,
+        receiverInfo: receiverInfo
+          ? { name: receiverInfo.name, avatar: receiverInfo.avatar }
+          : undefined,
+      });
+
+      console.log('✅ Cancelled call message saved:', {
+        messageId: result.message.id,
+        callerId: callerId,
+        receiverId: data.toUserId,
+      });
+
+      // ✅ THÊM: Emit newMessage cho cả hai người dùng
+      const baseMessage = {
+        id: result.message.id,
+        content: result.message.content,
+        timestamp: new Date(result.message.createdAt).toLocaleTimeString(
+          'vi-VN',
+          { hour: '2-digit', minute: '2-digit' },
+        ),
+        createdAt: result.message.createdAt,
+        messageType: result.message.messageType,
+        metadata: result.message.metadata,
+      };
+
+      // ✅ Emit to CALLER (người hủy)
+      const callerSocketId = this.connectedUsers.get(callerId);
+      if (callerSocketId) {
+        const callerPayload = {
+          message: {
+            ...baseMessage,
+            senderId: result.message.senderId,
+            senderName: callerInfo?.name || 'You',
+          },
+          conversation: {
+            id: result.conversation.id,
+            name: receiverInfo?.name || 'Unknown',
+            avatar: receiverInfo?.avatar || '',
+            receiverId: data.toUserId,
+          },
+        };
+
+        console.log('📤 Emit cancelled call to CALLER:', {
+          userId: callerId,
+          socketId: callerSocketId,
+        });
+
+        this.server.to(callerSocketId).emit('newMessage', callerPayload);
+      }
+
+      // ✅ Emit to CALLEE (người nhận)
+      const calleeSocketId = this.connectedUsers.get(data.toUserId);
+      if (calleeSocketId) {
+        const calleePayload = {
+          message: {
+            ...baseMessage,
+            senderId: result.message.senderId,
+            senderName: callerInfo?.name || 'Unknown',
+          },
+          conversation: {
+            id: result.conversation.id,
+            name: callerInfo?.name || 'Unknown',
+            avatar: callerInfo?.avatar || '',
+            receiverId: callerId,
+          },
+        };
+
+        console.log('📤 Emit cancelled call to CALLEE:', {
+          userId: data.toUserId,
+          socketId: calleeSocketId,
+        });
+
+        this.server.to(calleeSocketId).emit('newMessage', calleePayload);
+      }
+
+      console.log('✅✅ Cancelled call messages emitted successfully');
+    } catch (error) {
+      console.error('❌ Error saving cancelled call:', error);
+    }
+  }
+
+  this.activeCalls.delete(data.callId);
+  console.log(`🚫 Call ${data.callId} cancelled`);
+  return { success: true };
+}
+
 
   // ==========================================
   // 🛠️ HELPER METHODS
